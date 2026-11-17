@@ -14,9 +14,15 @@ const PORT = Number(process.env.PORT || config.port || 3000);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json' };
 const STATUS = { pages: 0, username: '', connected: false, roomId: null, lastError: null, events: 0, lastEvent: null, startedAt: new Date().toISOString() };
 const server = http.createServer((req, res) => {
+  if ((req.url || '').startsWith('/reconnect')) {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    connectTikTok();
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('กำลังต่อ TikTok ใหม่… รอ 10 วินาทีแล้วเปิด /status ดู');
+  }
   if ((req.url || '').startsWith('/status')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    STATUS.pages = wss.clients.size; STATUS.remembered = ROSTER.size; STATUS.host = HOST ? HOST.who.name + ' (' + HOST.coins + ')' : null;
+    STATUS.pages = wss.clients.size; STATUS.secondsSinceData = STATUS.lastDataAt ? Math.round((Date.now() - STATUS.lastDataAt) / 1000) : null; STATUS.remembered = ROSTER.size; STATUS.host = HOST ? HOST.who.name + ' (' + HOST.coins + ')' : null;
     return res.end(JSON.stringify(STATUS, null, 2));
   }
   let url = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -111,32 +117,62 @@ async function loadLib() {
   ({ TikTokLiveConnection, WebcastEvent, ControlEvent } = await import('tiktok-live-connector'));
 }
 
-async function connectTikTok() {
-  try { await loadLib(); } catch (e) { console.error('โหลดไลบรารี TikTok ไม่ได้ (ต้องใช้ Node.js 20 ขึ้นไป):', e.message); return; }
-  const user = String(process.env.TIKTOK_USERNAME || config.username || '').trim().replace(/^@/, '');
-  STATUS.username = user;
-  if (!user || user === 'ใส่ชื่อบัญชี') { console.error('ยังไม่ได้ใส่ username ใน config.json'); return; }
-  const opts = {};
-  const key = process.env.SIGN_API_KEY || config.signApiKey;
-  if (key) opts.signApiKey = key;
-  const conn = new TikTokLiveConnection(user, opts);
-  let retrying = false;
-  const retry = (why) => {
-    if (retrying) return; retrying = true;
-    console.log(why + ' — ลองใหม่ใน 15 วินาที');
-    setTimeout(connectTikTok, 15000);
-  };
-  conn.on(WebcastEvent.FOLLOW, handlers.follow);
-  conn.on(WebcastEvent.CHAT, handlers.chat);
-  conn.on(WebcastEvent.GIFT, handlers.gift);
-  conn.on(WebcastEvent.ROOM_USER, handlers.roomUser);
-  conn.on(WebcastEvent.LIKE, handlers.like);
-  conn.on(WebcastEvent.MEMBER, handlers.member);
-  conn.on(ControlEvent.DISCONNECTED, () => { STATUS.connected = false; retry('หลุดการเชื่อมต่อ'); });
-  conn.on(ControlEvent.ERROR, e => console.error('ข้อผิดพลาด:', e && (e.info || e.exception || e)));
-  conn.connect().then(s => { if (STATUS.roomId && STATUS.roomId !== s.roomId) { ROSTER.clear(); SCORES.clear(); HOST = null; } STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null; console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId); })
-    .catch(err => { STATUS.connected = false; STATUS.lastError = String(err && err.message ? err.message : err); retry('เชื่อมต่อไม่ได้ (' + (err && err.message ? err.message : err) + ') ตรวจว่าเปิดไลฟ์อยู่และชื่อบัญชีถูกต้อง'); });
+let CONN = null, connecting = false, retryTimer = null;
+function scheduleRetry(why, ms = 15000) {
+  if (retryTimer) return;
+  console.log(why + ' — ลองใหม่ใน ' + Math.round(ms / 1000) + ' วินาที');
+  retryTimer = setTimeout(() => { retryTimer = null; connectTikTok(); }, ms);
 }
+async function connectTikTok() {
+  if (connecting) return;
+  connecting = true;
+  try {
+    try { await loadLib(); } catch (e) { console.error('โหลดไลบรารี TikTok ไม่ได้ (ต้องใช้ Node.js 20 ขึ้นไป):', e.message); return; }
+    const user = String(process.env.TIKTOK_USERNAME || config.username || '').trim().replace(/^@/, '');
+    STATUS.username = user;
+    if (!user || user === 'ใส่ชื่อบัญชี') { console.error('ยังไม่ได้ใส่ชื่อบัญชี (TIKTOK_USERNAME)'); return; }
+    // ปิดการเชื่อมต่อเก่าก่อน (กันค้างอยู่ห้องเก่า)
+    if (CONN) { const old = CONN; CONN = null; try { old.removeAllListeners && old.removeAllListeners(); await old.disconnect(); } catch (_) {} }
+    STATUS.connected = false;
+    const opts = {};
+    const key = process.env.SIGN_API_KEY || config.signApiKey;
+    if (key) opts.signApiKey = key;
+    const conn = new TikTokLiveConnection(user, opts);
+    CONN = conn;
+    const on = (ev, fn) => conn.on(ev, d => { if (conn === CONN) fn(d); });
+    on(WebcastEvent.FOLLOW, handlers.follow);
+    on(WebcastEvent.CHAT, handlers.chat);
+    on(WebcastEvent.GIFT, handlers.gift);
+    on(WebcastEvent.ROOM_USER, handlers.roomUser);
+    on(WebcastEvent.LIKE, handlers.like);
+    on(WebcastEvent.MEMBER, handlers.member);
+    on(ControlEvent.RAW_DATA, () => { STATUS.lastDataAt = Date.now(); });
+    on(ControlEvent.DISCONNECTED, () => { STATUS.connected = false; scheduleRetry('หลุดการเชื่อมต่อ'); });
+    on(ControlEvent.ERROR, e => console.error('ข้อผิดพลาด:', e && (e.info || e.exception || e)));
+    try {
+      const s = await conn.connect();
+      if (conn !== CONN) return;
+      if (STATUS.roomId && STATUS.roomId !== s.roomId) { ROSTER.clear(); SCORES.clear(); HOST = null; }
+      STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null;
+      STATUS.connectedAt = new Date().toISOString(); STATUS.lastDataAt = Date.now();
+      console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId);
+    } catch (err) {
+      if (conn !== CONN) return;
+      STATUS.connected = false; STATUS.lastError = String(err && err.message ? err.message : err);
+      scheduleRetry('เชื่อมต่อไม่ได้ (' + STATUS.lastError + ') ตรวจว่าเปิดไลฟ์อยู่และชื่อบัญชีถูกต้อง');
+    }
+  } finally { connecting = false; }
+}
+// เฝ้าดู: ถ้าต่ออยู่แต่ไม่มีข้อมูลจาก TikTok เกิน 3 นาที (เช่น ค้างห้องเก่า) ให้ต่อใหม่เอง
+const SILENT_MS = 3 * 60 * 1000;
+function watchdog() {
+  if (DEMO || process.env.DEMO === '1') return;
+  if (STATUS.connected && STATUS.lastDataAt && Date.now() - STATUS.lastDataAt > SILENT_MS) {
+    console.log('ไม่มีข้อมูลจาก TikTok เกิน 3 นาที — ต่อใหม่');
+    STATUS.connected = false; connectTikTok();
+  }
+}
+setInterval(watchdog, 30000);
 
 /* ---------- โหมดทดสอบ: สร้างเหตุการณ์ปลอมให้ผ่านทางเดียวกับของจริง ---------- */
 function demo() {
