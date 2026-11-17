@@ -1,4 +1,4 @@
-// เซิร์ฟเวอร์ไลฟ์ศาลเจ้ามูเตลู
+// เซิร์ฟเวอร์ศึกมวยไลฟ์
 // รับเหตุการณ์จาก TikTok LIVE -> แปลงเป็นคำสั่ง -> ส่งให้หน้าเกมผ่าน WebSocket
 const http = require('http');
 const fs = require('fs');
@@ -22,7 +22,7 @@ const server = http.createServer((req, res) => {
   }
   if ((req.url || '').startsWith('/status')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    STATUS.pages = wss.clients.size; STATUS.secondsSinceData = STATUS.lastDataAt ? Math.round((Date.now() - STATUS.lastDataAt) / 1000) : null; STATUS.remembered = ROSTER.size; STATUS.host = HOST ? HOST.who.name + ' (' + HOST.coins + ')' : null;
+    STATUS.pages = wss.clients.size; STATUS.secondsSinceData = STATUS.lastDataAt ? Math.round((Date.now() - STATUS.lastDataAt) / 1000) : null; STATUS.remembered = ROSTER.size; STATUS.champ = CHAMP ? CHAMP.who.name + ' (ป้องกัน ' + CHAMP.defenses + ')' : null; delete STATUS.host;
     return res.end(JSON.stringify(STATUS, null, 2));
   }
   let url = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -41,7 +41,8 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 // จำคนในห้องและคะแนน เพื่อส่งให้หน้าเกมตอนโหลดใหม่ (ฉากจะไม่โล่ง)
 const ROSTER = new Map(), SCORES = new Map();
 let HOST = null; // เจ้าภาพ: ส่งของขวัญครั้งเดียวมากที่สุด
-const GIFT_COINS = { incense: 1, stick: 5, lantern: 20, bless: 100 };
+const GIFT_COINS = { jab: 1, kick: 5, elbow: 20, knee: 100, incense: 1, stick: 5, lantern: 20, bless: 100 };
+let CHAMP = null; // แชมป์เวที (หน้าเกมส่งมาบอก)
 function remember(msg) {
   if (!msg.who || !msg.who.id) return;
   ROSTER.delete(msg.who.id); ROSTER.set(msg.who.id, { who: msg.who, last: Date.now() });
@@ -58,7 +59,7 @@ function snapshot() {
   const users = [...ROSTER.values()].filter(r => r.last > cut).slice(-20).map(r => r.who);
   const scores = [...SCORES.values()].sort((a, b) => b.score - a.score).slice(0, 10).map(s => ({ who: s.who, score: s.score }));
   const total = [...SCORES.values()].reduce((t, s) => t + s.score, 0);
-  return { type: 'snapshot', users, scores, host: HOST, total };
+  return { type: 'snapshot', users, scores, host: HOST, total, champ: CHAMP };
 }
 function send(msg) {
   remember(msg);
@@ -68,7 +69,12 @@ function send(msg) {
   if (msg.type === 'like' || msg.type === 'viewers') return;
   console.log('->', msg.type, msg.who ? (msg.who.name || msg.who.id) : '', msg.text || '', msg.coins ? msg.coins + ' เหรียญ' : '');
 }
-wss.on('connection', ws => { console.log('หน้าเกมเชื่อมต่อแล้ว'); ws.send(JSON.stringify(snapshot())); });
+wss.on('connection', ws => {
+  console.log('หน้าเกมเชื่อมต่อแล้ว'); ws.send(JSON.stringify(snapshot()));
+  ws.on('message', raw => {
+    try { const m = JSON.parse(String(raw)); if (m && m.type === 'champ') CHAMP = m.who ? { who: m.who, defenses: m.defenses || 0 } : null; } catch (_) {}
+  });
+});
 
 /* ---------- แปลงเหตุการณ์ TikTok -> คำสั่งเกม ---------- */
 // ไลบรารีเวอร์ชันใหม่: ชื่อบัญชีอยู่ใน displayId, รูปอยู่ใน avatarThumb.urlList (รองรับชื่อช่องแบบเก่าด้วย)
@@ -152,7 +158,7 @@ async function connectTikTok() {
     try {
       const s = await conn.connect();
       if (conn !== CONN) return;
-      if (STATUS.roomId && STATUS.roomId !== s.roomId) { ROSTER.clear(); SCORES.clear(); HOST = null; }
+      if (STATUS.roomId && STATUS.roomId !== s.roomId) { ROSTER.clear(); SCORES.clear(); HOST = null; CHAMP = null; }
       STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null;
       STATUS.connectedAt = new Date().toISOString(); STATUS.lastDataAt = Date.now();
       console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId);
@@ -183,7 +189,7 @@ function demo() {
     const r = Math.random(), user = fakeUser();
     if (r < .08) return handlers.like({ likeCount: 5 });
     if (r < .3) handlers.follow({ user });
-    else if (r < .4) handlers.chat({ user, comment: Math.random() < .5 ? 'สาธุ' : 'เกิดวัน' + ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์'][Math.floor(Math.random() * 7)] });
+    else if (r < .4) handlers.chat({ user, comment: ['แดง', 'น้ำเงิน', 'สู้ๆ', 'แดงงง'][Math.floor(Math.random() * 4)] });
     else handleGift({ user, repeatCount: 1, repeatEnd: true, giftDetails: { giftType: 0, giftName: 'demo', diamondCount: coinsList[Math.floor(Math.random() * coinsList.length)] } });
   }, 1800);
   setInterval(() => handlers.roomUser({ viewerCount: 100 + Math.floor(Math.random() * 60) }), 5000);

@@ -3,10 +3,22 @@
   "port": 3000,
   "signApiKey": "",
   "giftTiers": [
-    { "minCoins": 100, "action": "bless" },
-    { "minCoins": 20, "action": "lantern" },
-    { "minCoins": 5, "action": "stick" },
-    { "minCoins": 1, "action": "incense" }
+    {
+      "minCoins": 100,
+      "action": "knee"
+    },
+    {
+      "minCoins": 20,
+      "action": "elbow"
+    },
+    {
+      "minCoins": 5,
+      "action": "kick"
+    },
+    {
+      "minCoins": 1,
+      "action": "jab"
+    }
   ],
   "giftNameActions": {}
 }
