@@ -12,7 +12,12 @@ const PORT = Number(process.env.PORT || config.port || 3000);
 
 /* ---------- เว็บเซิร์ฟเวอร์ (เสิร์ฟหน้าเกม) ---------- */
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json' };
+const STATUS = { username: '', connected: false, roomId: null, lastError: null, events: 0, lastEvent: null, startedAt: new Date().toISOString() };
 const server = http.createServer((req, res) => {
+  if ((req.url || '').startsWith('/status')) {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(STATUS, null, 2));
+  }
   let url = decodeURIComponent((req.url || '/').split('?')[0]);
   if (url === '/') url = '/index.html';
   const file = path.join(__dirname, 'public', path.normalize(url).replace(/^(\.\.[\/\\])+/, ''));
@@ -27,6 +32,7 @@ const server = http.createServer((req, res) => {
 /* ---------- WebSocket ไปหน้าเกม ---------- */
 const wss = new WebSocketServer({ server, path: '/ws' });
 function send(msg) {
+  if (msg.type !== 'viewers') { STATUS.events++; STATUS.lastEvent = msg.type + ' ' + (msg.who ? msg.who.name : '') + ' @ ' + new Date().toISOString(); }
   const s = JSON.stringify(msg);
   wss.clients.forEach(c => { if (c.readyState === 1) c.send(s); });
   if (msg.type === 'like' || msg.type === 'viewers') return;
@@ -62,6 +68,7 @@ function handleGift(d) {
 
 const handlers = {
   follow: d => send({ type: 'follow', who: whoOf(d.user) }),
+  member: d => send({ type: 'join', who: whoOf(d.user) }),
   chat: d => d.comment && send({ type: 'comment', who: whoOf(d.user), text: String(d.comment).slice(0, 60) }),
   gift: handleGift,
   like: d => send({ type: 'like', count: d.likeCount || 1 }),
@@ -77,6 +84,7 @@ async function loadLib() {
 async function connectTikTok() {
   try { await loadLib(); } catch (e) { console.error('โหลดไลบรารี TikTok ไม่ได้ (ต้องใช้ Node.js 20 ขึ้นไป):', e.message); return; }
   const user = String(process.env.TIKTOK_USERNAME || config.username || '').trim().replace(/^@/, '');
+  STATUS.username = user;
   if (!user || user === 'ใส่ชื่อบัญชี') { console.error('ยังไม่ได้ใส่ username ใน config.json'); return; }
   const opts = {};
   const key = process.env.SIGN_API_KEY || config.signApiKey;
@@ -93,10 +101,11 @@ async function connectTikTok() {
   conn.on(WebcastEvent.GIFT, handlers.gift);
   conn.on(WebcastEvent.ROOM_USER, handlers.roomUser);
   conn.on(WebcastEvent.LIKE, handlers.like);
-  conn.on(ControlEvent.DISCONNECTED, () => retry('หลุดการเชื่อมต่อ'));
+  conn.on(WebcastEvent.MEMBER, handlers.member);
+  conn.on(ControlEvent.DISCONNECTED, () => { STATUS.connected = false; retry('หลุดการเชื่อมต่อ'); });
   conn.on(ControlEvent.ERROR, e => console.error('ข้อผิดพลาด:', e && (e.info || e.exception || e)));
-  conn.connect().then(s => console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId))
-    .catch(err => retry('เชื่อมต่อไม่ได้ (' + (err && err.message ? err.message : err) + ') ตรวจว่าเปิดไลฟ์อยู่และชื่อบัญชีถูกต้อง'));
+  conn.connect().then(s => { STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null; console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId); })
+    .catch(err => { STATUS.connected = false; STATUS.lastError = String(err && err.message ? err.message : err); retry('เชื่อมต่อไม่ได้ (' + (err && err.message ? err.message : err) + ') ตรวจว่าเปิดไลฟ์อยู่และชื่อบัญชีถูกต้อง'); });
 }
 
 /* ---------- โหมดทดสอบ: สร้างเหตุการณ์ปลอมให้ผ่านทางเดียวกับของจริง ---------- */

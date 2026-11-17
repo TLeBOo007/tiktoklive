@@ -141,6 +141,7 @@ function ensure(w){
   return a;
 }
 function evFollow(w){const a=ensure(w);a.hop=1;addFeed('🙏 '+w.name+' มาไหว้ศาลเจ้า')}
+function evJoin(w){if(S.avs.find(v=>v.id===w.id))return;const a=ensure(w);a.hop=1;addFeed('👋 '+w.name+' เข้ามาในศาลเจ้า')}
 function evIncense(w,c){
   const a=ensure(w);a.inc=30;a.bow=2;add(w,c||1);S.burner=Math.min(14,S.burner+1);
   const h=headPos(a);S.parts.push({k:'fly',sx:h.x,sy:h.y+10,ex:180,ey:438,life:0,max:.9});
@@ -180,6 +181,7 @@ function onServerMsg(m){
   if(!m.who)return;
   const c=m.coins;
   if(m.type==='follow')evFollow(m.who);
+  else if(m.type==='join')evJoin(m.who);
   else if(m.type==='incense')evIncense(m.who,c);
   else if(m.type==='stick')evStick(m.who,c);
   else if(m.type==='lantern')evLantern(m.who,c);
@@ -414,7 +416,7 @@ function drawUI(tops){
   txt('✦ ศาลเจ้ามูเตลู · ขอพรยามค่ำคืน ✦',180,139.5,F('700',13.5,'Kanit'),tg,'center','rgba(60,0,0,.8)');
   const pu=1+Math.sin(S.t*3)*.03;ctx.save();ctx.translate(180,158);ctx.scale(pu,pu);
   rr(-112,-8.5,224,17,8.5);ctx.fillStyle='rgba(0,0,0,.65)';ctx.fill();ctx.strokeStyle='rgba(255,255,255,.25)';ctx.lineWidth=1;ctx.stroke();
-  txt('＋',-96,4,F('700',11),'#ff4d7a','center');txt('กดติดตาม = มาไหว้ศาลเจ้าทันที',6,4,F('700',10.5),'#fff','center');ctx.restore();
+  txt('＋',-96,4,F('700',11),'#ff4d7a','center');txt('เข้าไลฟ์ = มาไหว้ศาลเจ้าทันที',6,4,F('700',10.5),'#fff','center');ctx.restore();
   Object.values(GIFTS).forEach((g,i)=>{
     const x=8+i*87,y=170,w=83,h=32;rr(x,y,w,h,8);
     const cg=ctx.createLinearGradient(0,y,0,y+h);cg.addColorStop(0,'rgba(140,18,32,.92)');cg.addColorStop(1,'rgba(60,6,14,.92)');ctx.fillStyle=cg;ctx.fill();
@@ -438,7 +440,7 @@ function drawToasts(){
 function drawEmpty(){
   if(S.avs.length)return;const a=.6+.4*Math.sin(S.t*2.5);ctx.globalAlpha=a;
   txt('ยังไม่มีใครมาไหว้…',180,540,F('700',14,'Kanit'),'#ffe7a3','center','rgba(0,0,0,.6)');
-  txt('กดติดตาม หรือพิมพ์ "สาธุ" เพื่อมาไหว้ศาลเจ้า',180,560,F('700',11),'#fff','center','rgba(0,0,0,.6)');ctx.globalAlpha=1;
+  txt('เข้ามาในไลฟ์ หรือพิมพ์ "สาธุ" เพื่อมาไหว้ศาลเจ้า',180,560,F('700',11),'#fff','center','rgba(0,0,0,.6)');ctx.globalAlpha=1;
 }
 function drawBanner(){
   const b=S.banner;if(!b)return;const al=clamp(Math.min(b.t*4,(4.5-b.t)*2),0,1),sc=easeBack(clamp(b.t*3,0,1));
