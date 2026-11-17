@@ -4,7 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
-const { TikTokLiveConnection, WebcastEvent, ControlEvent } = require('tiktok-live-connector');
+let TikTokLiveConnection, WebcastEvent, ControlEvent; // โหลดตอนเริ่ม (ไลบรารีเป็น ES Module)
 
 const config = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
 const DEMO = process.argv.includes('--demo');
@@ -69,7 +69,13 @@ const handlers = {
 };
 
 /* ---------- เชื่อมต่อ TikTok ---------- */
-function connectTikTok() {
+async function loadLib() {
+  if (TikTokLiveConnection) return;
+  ({ TikTokLiveConnection, WebcastEvent, ControlEvent } = await import('tiktok-live-connector'));
+}
+
+async function connectTikTok() {
+  try { await loadLib(); } catch (e) { console.error('โหลดไลบรารี TikTok ไม่ได้ (ต้องใช้ Node.js 20 ขึ้นไป):', e.message); return; }
   const user = String(process.env.TIKTOK_USERNAME || config.username || '').trim().replace(/^@/, '');
   if (!user || user === 'ใส่ชื่อบัญชี') { console.error('ยังไม่ได้ใส่ username ใน config.json'); return; }
   const opts = {};
