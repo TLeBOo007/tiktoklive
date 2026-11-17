@@ -12,10 +12,11 @@ const PORT = Number(process.env.PORT || config.port || 3000);
 
 /* ---------- เว็บเซิร์ฟเวอร์ (เสิร์ฟหน้าเกม) ---------- */
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json' };
-const STATUS = { username: '', connected: false, roomId: null, lastError: null, events: 0, lastEvent: null, startedAt: new Date().toISOString() };
+const STATUS = { pages: 0, username: '', connected: false, roomId: null, lastError: null, events: 0, lastEvent: null, startedAt: new Date().toISOString() };
 const server = http.createServer((req, res) => {
   if ((req.url || '').startsWith('/status')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    STATUS.pages = wss.clients.size; STATUS.remembered = ROSTER.size; STATUS.host = HOST ? HOST.who.name + ' (' + HOST.coins + ')' : null;
     return res.end(JSON.stringify(STATUS, null, 2));
   }
   let url = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -31,20 +32,49 @@ const server = http.createServer((req, res) => {
 
 /* ---------- WebSocket ไปหน้าเกม ---------- */
 const wss = new WebSocketServer({ server, path: '/ws' });
+// จำคนในห้องและคะแนน เพื่อส่งให้หน้าเกมตอนโหลดใหม่ (ฉากจะไม่โล่ง)
+const ROSTER = new Map(), SCORES = new Map();
+let HOST = null; // เจ้าภาพ: ส่งของขวัญครั้งเดียวมากที่สุด
+const GIFT_COINS = { incense: 1, stick: 5, lantern: 20, bless: 100 };
+function remember(msg) {
+  if (!msg.who || !msg.who.id) return;
+  ROSTER.delete(msg.who.id); ROSTER.set(msg.who.id, { who: msg.who, last: Date.now() });
+  while (ROSTER.size > 40) ROSTER.delete(ROSTER.keys().next().value);
+  if (GIFT_COINS[msg.type]) {
+    const s = SCORES.get(msg.who.id) || { who: msg.who, score: 0 };
+    const c = msg.coins || GIFT_COINS[msg.type];
+    s.who = msg.who; s.score += c; SCORES.set(msg.who.id, s);
+    if (!HOST || c > HOST.coins) HOST = { who: msg.who, coins: c };
+  }
+}
+function snapshot() {
+  const cut = Date.now() - 30 * 60 * 1000;
+  const users = [...ROSTER.values()].filter(r => r.last > cut).slice(-20).map(r => r.who);
+  const scores = [...SCORES.values()].sort((a, b) => b.score - a.score).slice(0, 10).map(s => ({ who: s.who, score: s.score }));
+  const total = [...SCORES.values()].reduce((t, s) => t + s.score, 0);
+  return { type: 'snapshot', users, scores, host: HOST, total };
+}
 function send(msg) {
+  remember(msg);
   if (msg.type !== 'viewers') { STATUS.events++; STATUS.lastEvent = msg.type + ' ' + (msg.who ? msg.who.name : '') + ' @ ' + new Date().toISOString(); }
   const s = JSON.stringify(msg);
   wss.clients.forEach(c => { if (c.readyState === 1) c.send(s); });
   if (msg.type === 'like' || msg.type === 'viewers') return;
   console.log('->', msg.type, msg.who ? (msg.who.name || msg.who.id) : '', msg.text || '', msg.coins ? msg.coins + ' เหรียญ' : '');
 }
-wss.on('connection', () => console.log('หน้าเกมเชื่อมต่อแล้ว'));
+wss.on('connection', ws => { console.log('หน้าเกมเชื่อมต่อแล้ว'); ws.send(JSON.stringify(snapshot())); });
 
 /* ---------- แปลงเหตุการณ์ TikTok -> คำสั่งเกม ---------- */
+// ไลบรารีเวอร์ชันใหม่: ชื่อบัญชีอยู่ใน displayId, รูปอยู่ใน avatarThumb.urlList (รองรับชื่อช่องแบบเก่าด้วย)
+function picOf(u) {
+  const lists = [u?.avatarThumb?.urlList, u?.avatarMedium?.urlList, u?.avatarLarge?.urlList, u?.profilePicture?.urls, u?.profilePicture?.url].filter(Array.isArray);
+  for (const l of lists) { const ok = l.find(x => x && !/\.heic/i.test(x)); if (ok) return ok; }
+  return u?.profilePictureUrl || '';
+}
 const whoOf = u => ({
-  id: String(u?.uniqueId || u?.userId || u?.nickname || 'unknown'),
-  name: String(u?.nickname || u?.uniqueId || 'ผู้ชม'),
-  pic: String(u?.profilePicture?.urls?.[0] || u?.profilePicture?.url?.[0] || u?.profilePictureUrl || ''),
+  id: String(u?.displayId || u?.uniqueId || u?.id || u?.userId || u?.nickname || 'unknown'),
+  name: String(u?.nickname || u?.displayId || u?.uniqueId || 'ผู้ชม'),
+  pic: String(picOf(u)),
 });
 
 // เลือกคำสั่งจากชื่อของขวัญก่อน ถ้าไม่ตรงค่อยดูจากจำนวนเหรียญรวม
@@ -71,7 +101,7 @@ const handlers = {
   member: d => send({ type: 'join', who: whoOf(d.user) }),
   chat: d => d.comment && send({ type: 'comment', who: whoOf(d.user), text: String(d.comment).slice(0, 60) }),
   gift: handleGift,
-  like: d => send({ type: 'like', count: d.likeCount || 1 }),
+  like: d => send({ type: 'like', count: d.likeCount || 1, who: d.user ? whoOf(d.user) : undefined }),
   roomUser: d => typeof d.viewerCount === 'number' && send({ type: 'viewers', count: d.viewerCount }),
 };
 
@@ -104,7 +134,7 @@ async function connectTikTok() {
   conn.on(WebcastEvent.MEMBER, handlers.member);
   conn.on(ControlEvent.DISCONNECTED, () => { STATUS.connected = false; retry('หลุดการเชื่อมต่อ'); });
   conn.on(ControlEvent.ERROR, e => console.error('ข้อผิดพลาด:', e && (e.info || e.exception || e)));
-  conn.connect().then(s => { STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null; console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId); })
+  conn.connect().then(s => { if (STATUS.roomId && STATUS.roomId !== s.roomId) { ROSTER.clear(); SCORES.clear(); HOST = null; } STATUS.connected = true; STATUS.roomId = s.roomId; STATUS.lastError = null; console.log('เชื่อมต่อ TikTok สำเร็จ ห้อง', s.roomId); })
     .catch(err => { STATUS.connected = false; STATUS.lastError = String(err && err.message ? err.message : err); retry('เชื่อมต่อไม่ได้ (' + (err && err.message ? err.message : err) + ') ตรวจว่าเปิดไลฟ์อยู่และชื่อบัญชีถูกต้อง'); });
 }
 
